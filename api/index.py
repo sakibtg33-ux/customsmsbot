@@ -1,39 +1,15 @@
 import json
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, CallbackContext
-)
+import requests
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import config
 import database as db
-import requests
-import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- হেল্পার ----------
-def send_sms(api_key, phone, message):
-    clean_phone = phone.lstrip('0')
-    if len(clean_phone) != 10:
-        return False, "ফোন নম্বর ১০ ডিজিটের হতে হবে (০ ছাড়া)"
-    url = config.API_URL
-    params = {'api_key': api_key, 'msg': message, 'to': '880' + clean_phone}
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        if data.get('error') == 0:
-            return True, f"✅ সফল! Request ID: {data.get('data', {}).get('request_id', 'N/A')}"
-        else:
-            return False, f"❌ ব্যর্থ: {data.get('msg', 'অজানা ত্রুটি')}"
-    except Exception as e:
-        return False, f"❌ নেটওয়ার্ক ত্রুটি: {str(e)}"
-
-def is_admin(user_id):
-    return user_id == config.ADMIN_USER_ID
-
-# ---------- কমান্ড হ্যান্ডলার ----------
+# ---------- বট কমান্ড হ্যান্ডলার ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db.get_user(user_id)
@@ -68,13 +44,26 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API key কনফিগার করা নেই। অ্যাডমিনকে জানান।")
         return
     
-    success, msg = send_sms(api_key, phone, message)
-    if success:
-        db.increment_count(user_id)
-        remaining -= 1
-        await update.message.reply_text(f"{msg}\n\n📊 আজ বাকি: {remaining}টি")
-    else:
-        await update.message.reply_text(msg)
+    # SMS পাঠান
+    clean_phone = phone.lstrip('0')
+    if len(clean_phone) != 10:
+        await update.message.reply_text("❌ ফোন নম্বর ১০ ডিজিটের হতে হবে (০ ছাড়া)")
+        return
+    url = config.API_URL
+    params = {'api_key': api_key, 'msg': message, 'to': '880' + clean_phone}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        if data.get('error') == 0:
+            db.increment_count(user_id)
+            remaining -= 1
+            await update.message.reply_text(
+                f"✅ সফল! Request ID: {data.get('data', {}).get('request_id', 'N/A')}\n\n📊 আজ বাকি: {remaining}টি"
+            )
+        else:
+            await update.message.reply_text(f"❌ ব্যর্থ: {data.get('msg', 'অজানা ত্রুটি')}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ নেটওয়ার্ক ত্রুটি: {str(e)}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -92,7 +81,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
+    if user_id != config.ADMIN_USER_ID:
         await update.message.reply_text("⛔ এই কমান্ড শুধু অ্যাডমিনের জন্য।")
         return
     api_key = db.get_api_key()
@@ -107,7 +96,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
+    if user_id != config.ADMIN_USER_ID:
         await update.message.reply_text("⛔ অ্যাডমিন অনুমতি নেই।")
         return
     args = context.args
@@ -119,7 +108,7 @@ async def set_apikey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
+    if user_id != config.ADMIN_USER_ID:
         await update.message.reply_text("⛔ অ্যাডমিন অনুমতি নেই।")
         return
     args = context.args
@@ -135,7 +124,7 @@ async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
+    if user_id != config.ADMIN_USER_ID:
         await update.message.reply_text("⛔ অ্যাডমিন অনুমতি নেই।")
         return
     rows = db.get_all_users()
@@ -154,49 +143,68 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 অজানা কমান্ড। `/start` টাইপ করে সাহায্য নিন।")
 
-# ---------- Vercel Webhook এন্ট্রি ----------
-app = None
+# ---------- ASGI অ্যাপ্লিকেশন (Vercel entrypoint) ----------
+# বট অ্যাপ্লিকেশন তৈরি (একবার)
+bot_app = Application.builder().token(config.BOT_TOKEN).build()
+bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(CommandHandler("send", send_command))
+bot_app.add_handler(CommandHandler("status", status))
+bot_app.add_handler(CommandHandler("admin", admin_panel))
+bot_app.add_handler(CommandHandler("setapikey", set_apikey))
+bot_app.add_handler(CommandHandler("setlimit", set_limit))
+bot_app.add_handler(CommandHandler("users", users_list))
+bot_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-def create_app():
-    global app
-    if app is None:
-        # বট অ্যাপ্লিকেশন তৈরি
-        application = Application.builder().token(config.BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("send", send_command))
-        application.add_handler(CommandHandler("status", status))
-        application.add_handler(CommandHandler("admin", admin_panel))
-        application.add_handler(CommandHandler("setapikey", set_apikey))
-        application.add_handler(CommandHandler("setlimit", set_limit))
-        application.add_handler(CommandHandler("users", users_list))
-        application.add_handler(MessageHandler(filters.COMMAND, unknown))
-        app = application
-    return app
-
-# Vercel serverless function entry point
-async def handler(request):
-    """Vercel Python runtime entrypoint"""
-    # Webhook থেকে আপডেট পার্স করুন
+# Webhook অটো সেট (শুধু প্রথমবার)
+def set_webhook():
+    vercel_url = "https://customsmsbot.vercel.app"
+    webhook_url = f"{vercel_url}/api/index"
+    url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/setWebhook"
+    params = {"url": webhook_url}
     try:
-        body = await request.body()
-        data = json.loads(body)
-        update = Update.de_json(data, None)
+        resp = requests.get(url, params=params, timeout=5)
+        if resp.json().get("ok"):
+            logger.info(f"✅ Webhook সেট হয়েছে: {webhook_url}")
+        else:
+            logger.error(f"❌ Webhook সেট হয়নি: {resp.text}")
     except Exception as e:
-        return {
-            "statusCode": 400,
-            "body": json.dumps({"error": str(e)})
-        }
-    
-    application = create_app()
-    await application.process_update(update)
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"status": "ok"})
-    }
+        logger.error(f"❌ Webhook error: {e}")
 
-# লোকাল টেস্টিংয়ের জন্য (পোলিং) – Vercel এ ব্যবহার হবে না
-if __name__ == "__main__":
-    # শুধু লোকাল ডেভেলপমেন্টের জন্য
-    import asyncio
-    app = create_app()
-    asyncio.run(app.run_polling())
+set_webhook()
+
+# ASGI অ্যাপ্লিকেশন – Vercel এটি খুঁজে পাবে 'app' নামে
+async def app(scope, receive, send):
+    """ASGI অ্যাপ্লিকেশন যা Telegram webhook থেকে আপডেট প্রসেস করে"""
+    if scope["type"] != "http":
+        await send({"type": "http.response.start", "status": 400, "headers": []})
+        await send({"type": "http.response.body", "body": b"Bad Request"})
+        return
+
+    # রিকোয়েস্ট বডি পড়ি
+    body = b""
+    more_body = True
+    while more_body:
+        message = await receive()
+        if message["type"] == "http.request":
+            body += message.get("body", b"")
+            more_body = message.get("more_body", False)
+        else:
+            break
+
+    try:
+        data = json.loads(body.decode())
+        update = Update.de_json(data, None)
+        if update:
+            await bot_app.process_update(update)
+            status_code = 200
+            response_body = b'{"status":"ok"}'
+        else:
+            status_code = 400
+            response_body = b'{"error":"Invalid update"}'
+    except Exception as e:
+        logger.error(f"Error processing update: {e}")
+        status_code = 500
+        response_body = json.dumps({"error": str(e)}).encode()
+
+    await send({"type": "http.response.start", "status": status_code, "headers": []})
+    await send({"type": "http.response.body", "body": response_body})
