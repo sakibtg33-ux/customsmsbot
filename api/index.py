@@ -7,17 +7,17 @@ import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ---------- লগ সেটআপ ----------
+# ---------- লগ ----------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- কনফিগ ----------
+# ---------- কনফিগ (সব ডেটা এখানে) ----------
 BOT_TOKEN = "8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE"
-ADMIN_USER_ID = 1700797877   # ← আপনার আসল আইডি দিন
+ADMIN_USER_ID = 1700797877   # ← আপনার আসল আইডি দিন (সংখ্যা)
 DEFAULT_API_KEY = "di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz"
 API_URL = "https://api.sms.net.bd/sendsms"
 
-# ---------- ডেটাবেস ফাংশন ----------
+# ---------- ডেটাবেস ----------
 DB_PATH = "/tmp/sms.db"
 
 def get_db():
@@ -107,7 +107,7 @@ def get_all_users():
     conn.close()
     return rows
 
-# ---------- বট কমান্ড হ্যান্ডলার ----------
+# ---------- বট কমান্ড ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     get_user(user_id)
@@ -240,21 +240,31 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 অজানা কমান্ড। `/start` টাইপ করে সাহায্য নিন।")
 
-# ---------- বট অ্যাপ্লিকেশন তৈরি ----------
-def create_bot_app():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("send", send_command))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("setapikey", set_apikey))
-    app.add_handler(CommandHandler("setlimit", set_limit))
-    app.add_handler(CommandHandler("users", users_list))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
-    return app
+# ---------- বট অ্যাপ্লিকেশন ----------
+_bot_app = None
 
-# ---------- Webhook সেট ----------
+def get_bot_app():
+    global _bot_app
+    if _bot_app is None:
+        app = Application.builder().token(BOT_TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("send", send_command))
+        app.add_handler(CommandHandler("status", status))
+        app.add_handler(CommandHandler("admin", admin_panel))
+        app.add_handler(CommandHandler("setapikey", set_apikey))
+        app.add_handler(CommandHandler("setlimit", set_limit))
+        app.add_handler(CommandHandler("users", users_list))
+        app.add_handler(MessageHandler(filters.COMMAND, unknown))
+        _bot_app = app
+    return _bot_app
+
+# ---------- Webhook ----------
+_webhook_set = False
+
 def set_webhook():
+    global _webhook_set
+    if _webhook_set:
+        return
     vercel_url = "https://customsmsbot.vercel.app"
     webhook_url = f"{vercel_url}/api/index"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
@@ -268,29 +278,19 @@ def set_webhook():
             logger.error(f"❌ Webhook সেট হয়নি: {data}")
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
+    _webhook_set = True
 
 # ---------- Vercel entrypoint ----------
-_bot_app = None
-_webhook_set = False
-
 async def handler(request):
-    """Vercel-এর Python runtime-এর জন্য প্রধান এন্ট্রি"""
-    global _bot_app, _webhook_set
     try:
-        if not _webhook_set:
-            set_webhook()
-            _webhook_set = True
-        
+        set_webhook()
         body = await request.body()
         data = json.loads(body)
         update = Update.de_json(data, None)
         if update is None:
             return {"statusCode": 400, "body": json.dumps({"error": "Invalid update"})}
-        
-        if _bot_app is None:
-            _bot_app = create_bot_app()
-        
-        await _bot_app.process_update(update)
+        app = get_bot_app()
+        await app.process_update(update)
         return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
     except Exception as e:
         logger.error(f"Handler error: {e}", exc_info=True)
