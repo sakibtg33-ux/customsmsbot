@@ -1,11 +1,13 @@
 {
   "name": "customsmsbot",
   "version": "1.0.0",
-  "description": "Telegram SMS Bot for sms.net.bd",
+  "description": "Telegram SMS Bot",
   "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
   "dependencies": {
     "telegraf": "^4.15.3",
-    "sqlite3": "^5.1.6",
-    "sqlite": "^5.1.1"
+    "sqlite3": "^5.1.7"
   }
 }
