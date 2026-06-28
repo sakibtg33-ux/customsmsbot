@@ -1,14 +1,11 @@
 const { Telegraf } = require('telegraf');
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
 
 // ================== CONFIG ==================
 const BOT_TOKEN = '8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE';
 const ADMIN_USER_ID = 1700797877;  // ← Your actual Telegram user ID (number)
 const DEFAULT_API_KEY = 'di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz';
 const API_URL = 'https://api.sms.net.bd/sendsms';
-const BALANCE_URL = 'https://api.sms.net.bd/balance';
 // =============================================
 
 // ---------- Database (Vercel /tmp) ----------
@@ -143,14 +140,16 @@ async function sendSMS(apiKey, phone, message) {
   }
 }
 
-// ---------- Balance Check ----------
+// ---------- Balance Check (Fixed URL) ----------
 async function checkBalance(apiKey) {
   try {
-    const url = `${BALANCE_URL}?api_key=${apiKey}`;
+    const url = `https://api.sms.net.bd/user/balance/?api_key=${apiKey}`;
     const response = await fetch(url);
     const data = await response.json();
     if (data.error === 0) {
-      return { success: true, balance: data.balance || data.data?.balance || 'N/A' };
+      // Handle both possible response formats
+      const balance = data.balance || data.data?.balance || 'N/A';
+      return { success: true, balance };
     } else {
       return { success: false, msg: data.msg || 'Failed to fetch balance' };
     }
@@ -325,7 +324,7 @@ bot.command('users', async (ctx) => {
   if (text) await ctx.replyWithMarkdown(text);
 });
 
-// /balance - Admin only
+// /balance - Admin only (Fixed URL)
 bot.command('balance', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
