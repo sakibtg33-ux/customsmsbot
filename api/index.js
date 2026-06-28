@@ -3,9 +3,10 @@ const sqlite3 = require('sqlite3').verbose();
 
 // ================== CONFIG ==================
 const BOT_TOKEN = '8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE';
-const ADMIN_USER_ID = 1700797877;  // ← Your actual Telegram user ID (number)
+const ADMIN_USER_ID = 1700797877;  // ← Replace with your Telegram user ID (number)
 const DEFAULT_API_KEY = 'di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz';
-const API_URL = 'https://api.sms.net.bd/sendsms';
+const SMS_API_URL = 'https://api.sms.net.bd/sendsms';
+const BALANCE_API_URL = 'https://api.sms.net.bd/user/balance/';
 // =============================================
 
 // ---------- Database (Vercel /tmp) ----------
@@ -38,6 +39,7 @@ function initDB() {
   db.close();
 }
 
+// ---------- Database Helpers ----------
 function getUser(user_id) {
   return new Promise((resolve, reject) => {
     const db = getDB();
@@ -87,6 +89,17 @@ function setDailyLimitForAll(limit) {
   });
 }
 
+function setUserLimit(user_id, limit) {
+  return new Promise((resolve, reject) => {
+    const db = getDB();
+    db.run('UPDATE users SET daily_limit = ? WHERE user_id = ?', [limit, user_id], (err) => {
+      db.close();
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 function getApiKey() {
   return new Promise((resolve, reject) => {
     const db = getDB();
@@ -124,9 +137,9 @@ function getAllUsers() {
 async function sendSMS(apiKey, phone, message) {
   const cleanPhone = phone.replace(/^0+/, '');
   if (cleanPhone.length !== 10) {
-    return { success: false, msg: 'Phone number must be 10 digits (without 0)' };
+    return { success: false, msg: 'Phone number must be 10 digits (without leading 0).' };
   }
-  const url = `${API_URL}?api_key=${apiKey}&msg=${encodeURIComponent(message)}&to=880${cleanPhone}`;
+  const url = `${SMS_API_URL}?api_key=${apiKey}&msg=${encodeURIComponent(message)}&to=880${cleanPhone}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
@@ -140,14 +153,13 @@ async function sendSMS(apiKey, phone, message) {
   }
 }
 
-// ---------- Balance Check (Fixed URL) ----------
+// ---------- Balance Check ----------
 async function checkBalance(apiKey) {
   try {
-    const url = `https://api.sms.net.bd/user/balance/?api_key=${apiKey}`;
+    const url = `${BALANCE_API_URL}?api_key=${apiKey}`;
     const response = await fetch(url);
     const data = await response.json();
     if (data.error === 0) {
-      // Handle both possible response formats
       const balance = data.balance || data.data?.balance || 'N/A';
       return { success: true, balance };
     } else {
@@ -161,7 +173,7 @@ async function checkBalance(apiKey) {
 // ---------- Bot ----------
 const bot = new Telegraf(BOT_TOKEN);
 
-// Auto set webhook
+// Auto set webhook (update your URL if different)
 const WEBHOOK_URL = 'https://customsmsbot-4mqx.vercel.app/api/index';
 bot.telegram.setWebhook(WEBHOOK_URL)
   .then(() => console.log('✅ Webhook set successfully'))
@@ -178,7 +190,8 @@ bot.command('start', async (ctx) => {
     '📌 `/send 017XXXXXXXX message` – Send SMS\n' +
     '📊 `/status` – Check your remaining SMS today\n' +
     '👨‍💼 Admin: `/admin`\n\n' +
-    'Default daily limit is 5 SMS per user.'
+    'Default daily limit is 5 SMS per user.\n' +
+    'Admin has unlimited SMS.'
   );
 });
 
@@ -195,7 +208,7 @@ bot.command('send', async (ctx) => {
 
   const userData = await getUser(userId);
   const isAdmin = (userId === ADMIN_USER_ID);
-  
+
   // If not admin, check limit
   if (!isAdmin) {
     const limit = userData.daily_limit;
@@ -217,8 +230,8 @@ bot.command('send', async (ctx) => {
   if (result.success) {
     if (!isAdmin) {
       await incrementCount(userId);
-      const userDataNew = await getUser(userId);
-      const remaining = userDataNew.daily_limit - userDataNew.today_count;
+      const updated = await getUser(userId);
+      const remaining = updated.daily_limit - updated.today_count;
       await ctx.reply(`${result.msg}\n\n📊 Remaining today: ${remaining}`);
     } else {
       await ctx.reply(`${result.msg}\n\n👑 Admin: Unlimited`);
@@ -236,7 +249,7 @@ bot.command('status', async (ctx) => {
   const used = userData.today_count;
   const remaining = limit - used;
   const isAdmin = (userId === ADMIN_USER_ID);
-  
+
   let text = `📊 *Today's SMS Status*\n`;
   if (isAdmin) {
     text += `👑 Admin: Unlimited\n`;
@@ -257,7 +270,8 @@ bot.command('admin', async (ctx) => {
   await ctx.replyWithMarkdown(
     '👨‍💼 *Admin Panel*\n\n' +
     '🔑 `/setapikey YOUR_API_KEY` – Update API key\n' +
-    '🔢 `/setlimit 10` – Change daily limit for all users\n' +
+    '🔢 `/setlimit 10` – Set daily limit for *all* users\n' +
+    '👤 `/setuserlimit USER_ID LIMIT` – Set limit for a *specific* user\n' +
     '📊 `/users` – List all users\n' +
     '💰 `/balance` – Check SMS balance\n' +
     `📌 Current API key: \`${apiKey ? apiKey.substring(0, 10) + '...' : 'Not set'}\``
@@ -280,7 +294,7 @@ bot.command('setapikey', async (ctx) => {
   await ctx.reply('✅ API key updated successfully.');
 });
 
-// /setlimit
+// /setlimit (global)
 bot.command('setlimit', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
@@ -298,7 +312,35 @@ bot.command('setlimit', async (ctx) => {
     return;
   }
   await setDailyLimitForAll(newLimit);
-  await ctx.reply(`✅ Daily limit set to \`${newLimit}\` for all users.`);
+  await ctx.reply(`✅ Daily limit set to \`${newLimit}\` for *all* users.`);
+});
+
+// /setuserlimit (individual)
+bot.command('setuserlimit', async (ctx) => {
+  const userId = ctx.from.id;
+  if (userId !== ADMIN_USER_ID) {
+    await ctx.reply('⛔ Admin only.');
+    return;
+  }
+  const args = ctx.message.text.split(' ');
+  if (args.length < 3 || isNaN(args[1]) || isNaN(args[2])) {
+    await ctx.reply('⚠️ `/setuserlimit USER_ID LIMIT` (both must be numbers)');
+    return;
+  }
+  const targetUserId = parseInt(args[1]);
+  const newLimit = parseInt(args[2]);
+  if (newLimit < 1) {
+    await ctx.reply('Limit must be at least 1.');
+    return;
+  }
+  // Check if user exists
+  const user = await getUser(targetUserId);
+  if (!user) {
+    await ctx.reply(`❌ User ${targetUserId} not found.`);
+    return;
+  }
+  await setUserLimit(targetUserId, newLimit);
+  await ctx.reply(`✅ Daily limit for user \`${targetUserId}\` set to \`${newLimit}\`.`);
 });
 
 // /users
@@ -324,7 +366,7 @@ bot.command('users', async (ctx) => {
   if (text) await ctx.replyWithMarkdown(text);
 });
 
-// /balance - Admin only (Fixed URL)
+// /balance
 bot.command('balance', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
