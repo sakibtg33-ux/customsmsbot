@@ -9,7 +9,7 @@ import database as db
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- বট কমান্ড হ্যান্ডলার ----------
+# ---------- বট কমান্ড ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db.get_user(user_id)
@@ -44,7 +44,6 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ API key কনফিগার করা নেই। অ্যাডমিনকে জানান।")
         return
     
-    # SMS পাঠান
     clean_phone = phone.lstrip('0')
     if len(clean_phone) != 10:
         await update.message.reply_text("❌ ফোন নম্বর ১০ ডিজিটের হতে হবে (০ ছাড়া)")
@@ -143,8 +142,7 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 অজানা কমান্ড। `/start` টাইপ করে সাহায্য নিন।")
 
-# ---------- ASGI অ্যাপ্লিকেশন (Vercel entrypoint) ----------
-# বট অ্যাপ্লিকেশন তৈরি (একবার)
+# ---------- বট অ্যাপ্লিকেশন ----------
 bot_app = Application.builder().token(config.BOT_TOKEN).build()
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("send", send_command))
@@ -155,7 +153,7 @@ bot_app.add_handler(CommandHandler("setlimit", set_limit))
 bot_app.add_handler(CommandHandler("users", users_list))
 bot_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-# Webhook অটো সেট (শুধু প্রথমবার)
+# ---------- Webhook অটো সেট ----------
 def set_webhook():
     vercel_url = "https://customsmsbot.vercel.app"
     webhook_url = f"{vercel_url}/api/index"
@@ -163,48 +161,29 @@ def set_webhook():
     params = {"url": webhook_url}
     try:
         resp = requests.get(url, params=params, timeout=5)
-        if resp.json().get("ok"):
+        data = resp.json()
+        if data.get("ok"):
             logger.info(f"✅ Webhook সেট হয়েছে: {webhook_url}")
         else:
-            logger.error(f"❌ Webhook সেট হয়নি: {resp.text}")
+            logger.error(f"❌ Webhook সেট হয়নি: {data}")
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
 
 set_webhook()
 
-# ASGI অ্যাপ্লিকেশন – Vercel এটি খুঁজে পাবে 'app' নামে
-async def app(scope, receive, send):
-    """ASGI অ্যাপ্লিকেশন যা Telegram webhook থেকে আপডেট প্রসেস করে"""
-    if scope["type"] != "http":
-        await send({"type": "http.response.start", "status": 400, "headers": []})
-        await send({"type": "http.response.body", "body": b"Bad Request"})
-        return
-
-    # রিকোয়েস্ট বডি পড়ি
-    body = b""
-    more_body = True
-    while more_body:
-        message = await receive()
-        if message["type"] == "http.request":
-            body += message.get("body", b"")
-            more_body = message.get("more_body", False)
-        else:
-            break
-
+# ---------- Vercel handler (ডিরেক্ট) ----------
+async def handler(request):
+    """Vercel serverless function entrypoint"""
     try:
-        data = json.loads(body.decode())
+        # রিকোয়েস্ট বডি পড়ি
+        body = await request.body()
+        data = json.loads(body)
         update = Update.de_json(data, None)
         if update:
             await bot_app.process_update(update)
-            status_code = 200
-            response_body = b'{"status":"ok"}'
+            return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
         else:
-            status_code = 400
-            response_body = b'{"error":"Invalid update"}'
+            return {"statusCode": 400, "body": json.dumps({"error": "Invalid update"})}
     except Exception as e:
-        logger.error(f"Error processing update: {e}")
-        status_code = 500
-        response_body = json.dumps({"error": str(e)}).encode()
-
-    await send({"type": "http.response.start", "status": status_code, "headers": []})
-    await send({"type": "http.response.body", "body": response_body})
+        logger.error(f"Error: {e}")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
