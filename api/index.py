@@ -171,11 +171,10 @@ def set_webhook():
 
 set_webhook()
 
-# ---------- Vercel handler (ডিরেক্ট) ----------
-async def handler(request):
-    """Vercel serverless function entrypoint"""
+# ---------- Vercel entrypoint: 'app' ফাংশন ----------
+async def app(request):
+    """Vercel Python runtime-এর জন্য entrypoint"""
     try:
-        # রিকোয়েস্ট বডি পড়ি
         body = await request.body()
         data = json.loads(body)
         update = Update.de_json(data, None)
