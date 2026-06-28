@@ -3,14 +3,15 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 
-// ================== কনফিগ (আপনার ডেটা) ==================
+// ================== CONFIG ==================
 const BOT_TOKEN = '8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE';
-const ADMIN_USER_ID = 1700797877;  // ← আপনার আসল টেলিগ্রাম ইউজার আইডি (সংখ্যা)
+const ADMIN_USER_ID = 1700797877;  // ← Your actual Telegram user ID (number)
 const DEFAULT_API_KEY = 'di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz';
 const API_URL = 'https://api.sms.net.bd/sendsms';
-// ==========================================================
+const BALANCE_URL = 'https://api.sms.net.bd/balance';
+// =============================================
 
-// ---------- ডেটাবেস (Vercel-এর /tmp তে) ----------
+// ---------- Database (Vercel /tmp) ----------
 const DB_PATH = '/tmp/sms.db';
 
 function getDB() {
@@ -122,116 +123,153 @@ function getAllUsers() {
   });
 }
 
-// ---------- SMS পাঠান ----------
+// ---------- SMS Sender ----------
 async function sendSMS(apiKey, phone, message) {
   const cleanPhone = phone.replace(/^0+/, '');
   if (cleanPhone.length !== 10) {
-    return { success: false, msg: 'ফোন নম্বর ১০ ডিজিটের হতে হবে (০ ছাড়া)' };
+    return { success: false, msg: 'Phone number must be 10 digits (without 0)' };
   }
   const url = `${API_URL}?api_key=${apiKey}&msg=${encodeURIComponent(message)}&to=880${cleanPhone}`;
   try {
     const response = await fetch(url);
     const data = await response.json();
     if (data.error === 0) {
-      return { success: true, msg: `✅ সফল! Request ID: ${data.data?.request_id || 'N/A'}` };
+      return { success: true, msg: `✅ Success! Request ID: ${data.data?.request_id || 'N/A'}` };
     } else {
-      return { success: false, msg: `❌ ব্যর্থ: ${data.msg || 'অজানা ত্রুটি'}` };
+      return { success: false, msg: `❌ Failed: ${data.msg || 'Unknown error'}` };
     }
   } catch (error) {
-    return { success: false, msg: `❌ নেটওয়ার্ক ত্রুটি: ${error.message}` };
+    return { success: false, msg: `❌ Network error: ${error.message}` };
   }
 }
 
-// ---------- বট ----------
+// ---------- Balance Check ----------
+async function checkBalance(apiKey) {
+  try {
+    const url = `${BALANCE_URL}?api_key=${apiKey}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data.error === 0) {
+      return { success: true, balance: data.balance || data.data?.balance || 'N/A' };
+    } else {
+      return { success: false, msg: data.msg || 'Failed to fetch balance' };
+    }
+  } catch (error) {
+    return { success: false, msg: `Network error: ${error.message}` };
+  }
+}
+
+// ---------- Bot ----------
 const bot = new Telegraf(BOT_TOKEN);
 
-// Webhook সেট (অটো)
-bot.telegram.setWebhook('https://customsmsbot-4mqx.vercel.app/api/index')
-  .then(() => console.log('✅ Webhook সেট হয়েছে'))
+// Auto set webhook
+const WEBHOOK_URL = 'https://customsmsbot-4mqx.vercel.app/api/index';
+bot.telegram.setWebhook(WEBHOOK_URL)
+  .then(() => console.log('✅ Webhook set successfully'))
   .catch(err => console.error('❌ Webhook error:', err));
 
-// ----- কমান্ড -----
+// ---------- Commands ----------
+
+// /start
 bot.command('start', async (ctx) => {
   const userId = ctx.from.id;
   await getUser(userId);
   await ctx.replyWithMarkdown(
-    '🤖 *SMS বটে স্বাগতম!*\n\n' +
-    '📌 `/send 017XXXXXXXX বার্তা` – SMS পাঠান\n' +
-    '📊 `/status` – আজকের বাকি SMS সংখ্যা\n' +
-    '👨‍💼 অ্যাডমিন: `/admin`\n\n' +
-    'প্রতিদিন ডিফল্ট ৫টি SMS পাঠাতে পারবেন।'
+    '🤖 *Welcome to SMS Bot!*\n\n' +
+    '📌 `/send 017XXXXXXXX message` – Send SMS\n' +
+    '📊 `/status` – Check your remaining SMS today\n' +
+    '👨‍💼 Admin: `/admin`\n\n' +
+    'Default daily limit is 5 SMS per user.'
   );
 });
 
+// /send
 bot.command('send', async (ctx) => {
   const userId = ctx.from.id;
   const args = ctx.message.text.split(' ');
   if (args.length < 3) {
-    await ctx.reply('⚠️ সঠিক ফরম্যাট: `/send 017XXXXXXXX বার্তা`');
+    await ctx.reply('⚠️ Correct format: `/send 017XXXXXXXX message`');
     return;
   }
   const phone = args[1];
   const message = args.slice(2).join(' ');
 
   const userData = await getUser(userId);
-  const limit = userData.daily_limit;
-  const used = userData.today_count;
-  const remaining = limit - used;
-  if (remaining <= 0) {
-    await ctx.reply(`⛔ আপনি আজকের ${limit}টি SMS শেষ করে ফেলেছেন। আগামীকাল চেষ্টা করুন।`);
-    return;
+  const isAdmin = (userId === ADMIN_USER_ID);
+  
+  // If not admin, check limit
+  if (!isAdmin) {
+    const limit = userData.daily_limit;
+    const used = userData.today_count;
+    const remaining = limit - used;
+    if (remaining <= 0) {
+      await ctx.reply(`⛔ You have reached your daily limit of ${limit} SMS. Try again tomorrow.`);
+      return;
+    }
   }
 
   const apiKey = await getApiKey();
   if (!apiKey) {
-    await ctx.reply('❌ API key কনফিগার করা নেই। অ্যাডমিনকে জানান।');
+    await ctx.reply('❌ API key not configured. Contact admin.');
     return;
   }
 
   const result = await sendSMS(apiKey, phone, message);
   if (result.success) {
-    await incrementCount(userId);
-    const newRemaining = remaining - 1;
-    await ctx.reply(`${result.msg}\n\n📊 আজ বাকি: ${newRemaining}টি`);
+    if (!isAdmin) {
+      await incrementCount(userId);
+      const userDataNew = await getUser(userId);
+      const remaining = userDataNew.daily_limit - userDataNew.today_count;
+      await ctx.reply(`${result.msg}\n\n📊 Remaining today: ${remaining}`);
+    } else {
+      await ctx.reply(`${result.msg}\n\n👑 Admin: Unlimited`);
+    }
   } else {
     await ctx.reply(result.msg);
   }
 });
 
+// /status
 bot.command('status', async (ctx) => {
   const userId = ctx.from.id;
   const userData = await getUser(userId);
   const limit = userData.daily_limit;
   const used = userData.today_count;
   const remaining = limit - used;
-  await ctx.replyWithMarkdown(
-    `📊 *আজকের SMS স্ট্যাটাস*\n` +
-    `📤 দৈনিক সীমা: ${limit}\n` +
-    `📨 আজকে পাঠিয়েছেন: ${used}\n` +
-    `✅ বাকি: ${remaining}`
-  );
+  const isAdmin = (userId === ADMIN_USER_ID);
+  
+  let text = `📊 *Today's SMS Status*\n`;
+  if (isAdmin) {
+    text += `👑 Admin: Unlimited\n`;
+  } else {
+    text += `📤 Daily limit: ${limit}\n📨 Sent today: ${used}\n✅ Remaining: ${remaining}`;
+  }
+  await ctx.replyWithMarkdown(text);
 });
 
+// /admin
 bot.command('admin', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
-    await ctx.reply('⛔ এই কমান্ড শুধু অ্যাডমিনের জন্য।');
+    await ctx.reply('⛔ Admin only command.');
     return;
   }
   const apiKey = await getApiKey();
   await ctx.replyWithMarkdown(
-    '👨‍💼 *অ্যাডমিন প্যানেল*\n\n' +
-    '🔑 `/setapikey YOUR_API_KEY` – API key পরিবর্তন করুন\n' +
-    '🔢 `/setlimit 10` – সব ইউজারের দৈনিক সীমা পরিবর্তন\n' +
-    '📊 `/users` – সব ইউজারের তালিকা\n' +
-    `📌 বর্তমান API key: \`${apiKey ? apiKey.substring(0, 10) + '...' : 'সেট নেই'}\``
+    '👨‍💼 *Admin Panel*\n\n' +
+    '🔑 `/setapikey YOUR_API_KEY` – Update API key\n' +
+    '🔢 `/setlimit 10` – Change daily limit for all users\n' +
+    '📊 `/users` – List all users\n' +
+    '💰 `/balance` – Check SMS balance\n' +
+    `📌 Current API key: \`${apiKey ? apiKey.substring(0, 10) + '...' : 'Not set'}\``
   );
 });
 
+// /setapikey
 bot.command('setapikey', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
-    await ctx.reply('⛔ অ্যাডমিন অনুমতি নেই।');
+    await ctx.reply('⛔ Admin only.');
     return;
   }
   const args = ctx.message.text.split(' ');
@@ -240,43 +278,45 @@ bot.command('setapikey', async (ctx) => {
     return;
   }
   await setApiKey(args[1]);
-  await ctx.reply('✅ API key সফলভাবে আপডেট করা হয়েছে।');
+  await ctx.reply('✅ API key updated successfully.');
 });
 
+// /setlimit
 bot.command('setlimit', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
-    await ctx.reply('⛔ অ্যাডমিন অনুমতি নেই।');
+    await ctx.reply('⛔ Admin only.');
     return;
   }
   const args = ctx.message.text.split(' ');
   if (args.length < 2 || isNaN(args[1])) {
-    await ctx.reply('⚠️ `/setlimit 10` (সংখ্যা দিন)');
+    await ctx.reply('⚠️ `/setlimit 10` (enter a number)');
     return;
   }
   const newLimit = parseInt(args[1]);
   if (newLimit < 1) {
-    await ctx.reply('সীমা কমপক্ষে ১ হতে হবে।');
+    await ctx.reply('Limit must be at least 1.');
     return;
   }
   await setDailyLimitForAll(newLimit);
-  await ctx.reply(`✅ সব ইউজারের দৈনিক সীমা \`${newLimit}\` এ সেট করা হয়েছে।`);
+  await ctx.reply(`✅ Daily limit set to \`${newLimit}\` for all users.`);
 });
 
+// /users
 bot.command('users', async (ctx) => {
   const userId = ctx.from.id;
   if (userId !== ADMIN_USER_ID) {
-    await ctx.reply('⛔ অ্যাডমিন অনুমতি নেই।');
+    await ctx.reply('⛔ Admin only.');
     return;
   }
   const rows = await getAllUsers();
   if (!rows || rows.length === 0) {
-    await ctx.reply('কোনো ইউজার নেই।');
+    await ctx.reply('No users found.');
     return;
   }
-  let text = '👥 *ইউজার লিস্ট*\n\n';
+  let text = '👥 *User List*\n\n';
   for (const row of rows) {
-    text += `🆔 ${row.user_id}\n  সীমা: ${row.daily_limit}, আজকে: ${row.today_count}, শেষ রিসেট: ${row.last_reset}\n\n`;
+    text += `🆔 ${row.user_id}\n  Limit: ${row.daily_limit}, Today: ${row.today_count}, Reset: ${row.last_reset}\n\n`;
     if (text.length > 4000) {
       await ctx.replyWithMarkdown(text);
       text = '';
@@ -285,8 +325,29 @@ bot.command('users', async (ctx) => {
   if (text) await ctx.replyWithMarkdown(text);
 });
 
+// /balance - Admin only
+bot.command('balance', async (ctx) => {
+  const userId = ctx.from.id;
+  if (userId !== ADMIN_USER_ID) {
+    await ctx.reply('⛔ Admin only command.');
+    return;
+  }
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    await ctx.reply('❌ API key not configured. Use /setapikey first.');
+    return;
+  }
+  const result = await checkBalance(apiKey);
+  if (result.success) {
+    await ctx.reply(`💰 *SMS Balance*\n\nBalance: \`${result.balance}\` SMS`, { parse_mode: 'Markdown' });
+  } else {
+    await ctx.reply(`❌ Failed to fetch balance: ${result.msg}`);
+  }
+});
+
+// Unknown command
 bot.on('text', async (ctx) => {
-  await ctx.reply('🤔 অজানা কমান্ড। `/start` টাইপ করে সাহায্য নিন।');
+  await ctx.reply('🤔 Unknown command. Type `/start` for help.');
 });
 
 // ---------- Vercel handler ----------
