@@ -32,19 +32,52 @@ function initDB() {
       value TEXT
     )
   `);
+  // Insert default API key if not exists
   db.run(`
     INSERT OR IGNORE INTO config (key, value)
     VALUES ('api_key', ?)
   `, [DEFAULT_API_KEY]);
+  
+  // Insert default limit for new users (default 5)
+  db.run(`
+    INSERT OR IGNORE INTO config (key, value)
+    VALUES ('default_limit', '5')
+  `);
+  
   db.close();
 }
 
 // ---------- Database Helpers ----------
-function getUser(user_id) {
+
+// Get the global default limit for new users
+function getDefaultLimit() {
   return new Promise((resolve, reject) => {
     const db = getDB();
+    db.get('SELECT value FROM config WHERE key = "default_limit"', (err, row) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(row ? parseInt(row.value) : 5);
+    });
+  });
+}
+
+// Set the global default limit
+function setDefaultLimit(limit) {
+  return new Promise((resolve, reject) => {
+    const db = getDB();
+    db.run('UPDATE config SET value = ? WHERE key = "default_limit"', [String(limit)], (err) => {
+      db.close();
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function getUser(user_id) {
+  return new Promise(async (resolve, reject) => {
+    const db = getDB();
     const today = new Date().toISOString().split('T')[0];
-    db.get('SELECT daily_limit, today_count, last_reset FROM users WHERE user_id = ?', [user_id], (err, row) => {
+    db.get('SELECT daily_limit, today_count, last_reset FROM users WHERE user_id = ?', [user_id], async (err, row) => {
       if (err) { db.close(); reject(err); return; }
       if (row) {
         let { daily_limit, today_count, last_reset } = row;
@@ -55,12 +88,19 @@ function getUser(user_id) {
         db.close();
         resolve({ daily_limit, today_count });
       } else {
-        db.run('INSERT INTO users (user_id, daily_limit, today_count, last_reset) VALUES (?, 5, 0, ?)',
-          [user_id, today], (err) => {
-            db.close();
-            if (err) reject(err);
-            else resolve({ daily_limit: 5, today_count: 0 });
-          });
+        // New user: get the default limit from config
+        try {
+          const defaultLimit = await getDefaultLimit();
+          db.run('INSERT INTO users (user_id, daily_limit, today_count, last_reset) VALUES (?, ?, 0, ?)',
+            [user_id, defaultLimit, today], (err) => {
+              db.close();
+              if (err) reject(err);
+              else resolve({ daily_limit: defaultLimit, today_count: 0 });
+            });
+        } catch (err) {
+          db.close();
+          reject(err);
+        }
       }
     });
   });
@@ -79,13 +119,23 @@ function incrementCount(user_id) {
 }
 
 function setDailyLimitForAll(limit) {
-  return new Promise((resolve, reject) => {
-    const db = getDB();
-    db.run('UPDATE users SET daily_limit = ?', [limit], function(err) {
-      db.close();
-      if (err) reject(err);
-      else resolve(this.changes); // returns number of rows updated
-    });
+  return new Promise(async (resolve, reject) => {
+    try {
+      const db = getDB();
+      // Update all existing users
+      db.run('UPDATE users SET daily_limit = ?', [limit], function(err) {
+        if (err) { db.close(); reject(err); return; }
+        const updatedCount = this.changes;
+        // Update the global default limit for new users
+        db.run('UPDATE config SET value = ? WHERE key = "default_limit"', [String(limit)], (err2) => {
+          db.close();
+          if (err2) reject(err2);
+          else resolve(updatedCount);
+        });
+      });
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
@@ -184,15 +234,20 @@ bot.telegram.setWebhook(WEBHOOK_URL)
 // /start
 bot.command('start', async (ctx) => {
   const userId = ctx.from.id;
-  await getUser(userId);
-  await ctx.replyWithMarkdown(
-    '🤖 *Welcome to SMS Bot!*\n\n' +
-    '📌 `/send 017XXXXXXXX message` – Send SMS\n' +
-    '📊 `/status` – Check your remaining SMS today\n' +
-    '👨‍💼 Admin: `/admin`\n\n' +
-    'Default daily limit is 5 SMS per user.\n' +
-    'Admin has unlimited SMS.'
-  );
+  const userData = await getUser(userId);
+  const isAdmin = (userId === ADMIN_USER_ID);
+  
+  let msg = '🤖 *Welcome to SMS Bot!*\n\n';
+  msg += '📌 `/send 017XXXXXXXX message` – Send SMS\n';
+  msg += '📊 `/status` – Check your remaining SMS today\n';
+  if (isAdmin) {
+    msg += '👨‍💼 `/admin` – Admin panel\n';
+  }
+  msg += `\n📤 Your daily limit: ${userData.daily_limit} SMS`;
+  if (isAdmin) {
+    msg += ' (Admin: Unlimited)';
+  }
+  await ctx.replyWithMarkdown(msg);
 });
 
 // /send
@@ -267,10 +322,11 @@ bot.command('admin', async (ctx) => {
     return;
   }
   const apiKey = await getApiKey();
+  const defaultLimit = await getDefaultLimit();
   await ctx.replyWithMarkdown(
     '👨‍💼 *Admin Panel*\n\n' +
     '🔑 `/setapikey YOUR_API_KEY` – Update API key\n' +
-    '🔢 `/setlimit 10` – Set daily limit for *all* users\n' +
+    `🔢 \`/setlimit ${defaultLimit}\` – Set daily limit for *ALL* users (existing + new)\n` +
     '👤 `/setuserlimit USER_ID LIMIT` – Set limit for a *specific* user\n' +
     '🔍 `/checklimit USER_ID` – Check a user\'s current limit\n' +
     '📊 `/users` – List all users\n' +
@@ -314,7 +370,12 @@ bot.command('setlimit', async (ctx) => {
   }
   try {
     const updatedRows = await setDailyLimitForAll(newLimit);
-    await ctx.reply(`✅ Daily limit set to \`${newLimit}\` for *all* users. (${updatedRows} users updated)`);
+    await ctx.reply(
+      `✅ Daily limit set to \`${newLimit}\` for *ALL* users.\n\n` +
+      `📊 Updated ${updatedRows} existing users.\n` +
+      `🆕 New users will also get this limit.\n` +
+      `📌 Now everyone's daily limit is ${newLimit}.`
+    );
   } catch (err) {
     console.error('setlimit error:', err);
     await ctx.reply(`❌ Failed to update limits: ${err.message}`);
