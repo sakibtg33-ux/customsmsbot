@@ -6,10 +6,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import config
 import database as db
 
+# লগ সেটআপ
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- বট কমান্ড ----------
+# ---------- বট কমান্ডগুলো (আগের মতো) ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db.get_user(user_id)
@@ -142,7 +143,7 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 অজানা কমান্ড। `/start` টাইপ করে সাহায্য নিন।")
 
-# ---------- বট অ্যাপ্লিকেশন ----------
+# ---------- বট অ্যাপ্লিকেশন তৈরি (একবার) ----------
 bot_app = Application.builder().token(config.BOT_TOKEN).build()
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CommandHandler("send", send_command))
@@ -153,8 +154,13 @@ bot_app.add_handler(CommandHandler("setlimit", set_limit))
 bot_app.add_handler(CommandHandler("users", users_list))
 bot_app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-# ---------- Webhook অটো সেট ----------
-def set_webhook():
+# ---------- Webhook সেট করার ফাংশন (শুধু একবার কল হবে) ----------
+webhook_set = False
+
+def set_webhook_once():
+    global webhook_set
+    if webhook_set:
+        return
     vercel_url = "https://customsmsbot.vercel.app"
     webhook_url = f"{vercel_url}/api/index"
     url = f"https://api.telegram.org/bot{config.BOT_TOKEN}/setWebhook"
@@ -168,21 +174,33 @@ def set_webhook():
             logger.error(f"❌ Webhook সেট হয়নি: {data}")
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
+    webhook_set = True
 
-set_webhook()
-
-# ---------- Vercel entrypoint: 'app' ফাংশন ----------
-async def app(request):
-    """Vercel Python runtime-এর জন্য entrypoint"""
+# ---------- Vercel entrypoint: `handler` ----------
+async def handler(request):
+    """Vercel Python runtime-এর জন্য প্রধান এন্ট্রি"""
     try:
+        # Webhook সেট (শুধু প্রথমবার)
+        set_webhook_once()
+
+        # রিকোয়েস্ট বডি পড়ি
         body = await request.body()
         data = json.loads(body)
         update = Update.de_json(data, None)
         if update:
             await bot_app.process_update(update)
-            return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"status": "ok"})
+            }
         else:
-            return {"statusCode": 400, "body": json.dumps({"error": "Invalid update"})}
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Invalid update"})
+            }
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        logger.error(f"Handler error: {e}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
