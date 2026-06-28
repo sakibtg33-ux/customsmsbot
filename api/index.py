@@ -7,18 +7,17 @@ import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ---------- লগ ----------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- কনফিগ (আপনার ডেটা) ----------
+# ---------- কনফিগ (সব ডেটা এখানে) ----------
 BOT_TOKEN = "8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE"
-ADMIN_USER_ID = 1700797877   # ← আপনার আসল টেলিগ্রাম ইউজার আইডি (সংখ্যা) দিন
+ADMIN_USER_ID = 123456789   # ← আপনার আসল আইডি দিন
 DEFAULT_API_KEY = "di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz"
 API_URL = "https://api.sms.net.bd/sendsms"
 # -----------------------------------------
 
-# ---------- ডেটাবেস (Vercel-এর /tmp তে) ----------
+# ---------- ডেটাবেস ফাংশন (লেজি) ----------
 DB_PATH = "/tmp/sms.db"
 
 def get_db():
@@ -108,7 +107,7 @@ def get_all_users():
     conn.close()
     return rows
 
-# ---------- বট কমান্ড ----------
+# ---------- বট কমান্ড (লেজি) ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     get_user(user_id)
@@ -241,7 +240,7 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 অজানা কমান্ড। `/start` টাইপ করে সাহায্য নিন।")
 
-# ---------- বট অ্যাপ্লিকেশন (লেজি লোড) ----------
+# ---------- বট অ্যাপ্লিকেশন (লেজি) ----------
 _bot_app = None
 
 def get_bot_app():
@@ -259,14 +258,14 @@ def get_bot_app():
         _bot_app = app
     return _bot_app
 
-# ---------- Webhook অটো সেট ----------
+# ---------- Webhook (লেজি) ----------
 _webhook_set = False
 
 def set_webhook():
     global _webhook_set
     if _webhook_set:
         return
-    vercel_url = "https://customsmsbot.vercel.app"   # আপনার ডোমেইন
+    vercel_url = "https://customsmsbot.vercel.app"
     webhook_url = f"{vercel_url}/api/index"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
     params = {"url": webhook_url}
@@ -281,19 +280,16 @@ def set_webhook():
         logger.error(f"❌ Webhook error: {e}")
     _webhook_set = True
 
-# ---------- Vercel entrypoint: handler ----------
+# ---------- Vercel entrypoint ----------
 async def handler(request):
-    """Vercel-এর Python runtime-এর জন্য প্রধান এন্ট্রি (এই নামেই থাকতে হবে)"""
+    """Vercel Python runtime entrypoint"""
     try:
-        # Webhook সেট (শুধু প্রথমবার)
         set_webhook()
-        # রিকোয়েস্ট বডি পড়ি
         body = await request.body()
         data = json.loads(body)
         update = Update.de_json(data, None)
         if update is None:
             return {"statusCode": 400, "body": json.dumps({"error": "Invalid update"})}
-        # বট অ্যাপ্লিকেশন পাই
         app = get_bot_app()
         await app.process_update(update)
         return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
