@@ -1,0 +1,11 @@
+{
+  "name": "customsmsbot",
+  "version": "1.0.0",
+  "description": "Telegram SMS Bot for sms.net.bd",
+  "main": "api/index.js",
+  "dependencies": {
+    "telegraf": "^4.15.3",
+    "sqlite3": "^5.1.6",
+    "sqlite": "^5.1.1"
+  }
+}
