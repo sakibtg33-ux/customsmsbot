@@ -81,10 +81,10 @@ function incrementCount(user_id) {
 function setDailyLimitForAll(limit) {
   return new Promise((resolve, reject) => {
     const db = getDB();
-    db.run('UPDATE users SET daily_limit = ?', [limit], (err) => {
+    db.run('UPDATE users SET daily_limit = ?', [limit], function(err) {
       db.close();
       if (err) reject(err);
-      else resolve();
+      else resolve(this.changes); // returns number of rows updated
     });
   });
 }
@@ -92,10 +92,10 @@ function setDailyLimitForAll(limit) {
 function setUserLimit(user_id, limit) {
   return new Promise((resolve, reject) => {
     const db = getDB();
-    db.run('UPDATE users SET daily_limit = ? WHERE user_id = ?', [limit, user_id], (err) => {
+    db.run('UPDATE users SET daily_limit = ? WHERE user_id = ?', [limit, user_id], function(err) {
       db.close();
       if (err) reject(err);
-      else resolve();
+      else resolve(this.changes);
     });
   });
 }
@@ -272,6 +272,7 @@ bot.command('admin', async (ctx) => {
     '🔑 `/setapikey YOUR_API_KEY` – Update API key\n' +
     '🔢 `/setlimit 10` – Set daily limit for *all* users\n' +
     '👤 `/setuserlimit USER_ID LIMIT` – Set limit for a *specific* user\n' +
+    '🔍 `/checklimit USER_ID` – Check a user\'s current limit\n' +
     '📊 `/users` – List all users\n' +
     '💰 `/balance` – Check SMS balance\n' +
     `📌 Current API key: \`${apiKey ? apiKey.substring(0, 10) + '...' : 'Not set'}\``
@@ -311,8 +312,13 @@ bot.command('setlimit', async (ctx) => {
     await ctx.reply('Limit must be at least 1.');
     return;
   }
-  await setDailyLimitForAll(newLimit);
-  await ctx.reply(`✅ Daily limit set to \`${newLimit}\` for *all* users.`);
+  try {
+    const updatedRows = await setDailyLimitForAll(newLimit);
+    await ctx.reply(`✅ Daily limit set to \`${newLimit}\` for *all* users. (${updatedRows} users updated)`);
+  } catch (err) {
+    console.error('setlimit error:', err);
+    await ctx.reply(`❌ Failed to update limits: ${err.message}`);
+  }
 });
 
 // /setuserlimit (individual)
@@ -333,14 +339,42 @@ bot.command('setuserlimit', async (ctx) => {
     await ctx.reply('Limit must be at least 1.');
     return;
   }
-  // Check if user exists
-  const user = await getUser(targetUserId);
-  if (!user) {
-    await ctx.reply(`❌ User ${targetUserId} not found.`);
+  try {
+    const changes = await setUserLimit(targetUserId, newLimit);
+    if (changes === 0) {
+      await ctx.reply(`❌ User ${targetUserId} not found.`);
+    } else {
+      await ctx.reply(`✅ Daily limit for user \`${targetUserId}\` set to \`${newLimit}\`.`);
+    }
+  } catch (err) {
+    console.error('setuserlimit error:', err);
+    await ctx.reply(`❌ Failed to update: ${err.message}`);
+  }
+});
+
+// /checklimit (admin only)
+bot.command('checklimit', async (ctx) => {
+  const userId = ctx.from.id;
+  if (userId !== ADMIN_USER_ID) {
+    await ctx.reply('⛔ Admin only.');
     return;
   }
-  await setUserLimit(targetUserId, newLimit);
-  await ctx.reply(`✅ Daily limit for user \`${targetUserId}\` set to \`${newLimit}\`.`);
+  const args = ctx.message.text.split(' ');
+  if (args.length < 2 || isNaN(args[1])) {
+    await ctx.reply('⚠️ `/checklimit USER_ID`');
+    return;
+  }
+  const targetUserId = parseInt(args[1]);
+  try {
+    const userData = await getUser(targetUserId);
+    await ctx.replyWithMarkdown(
+      `👤 *User ${targetUserId}*\n` +
+      `📤 Daily limit: ${userData.daily_limit}\n` +
+      `📨 Sent today: ${userData.today_count}`
+    );
+  } catch (err) {
+    await ctx.reply(`❌ Error: ${err.message}`);
+  }
 });
 
 // /users
