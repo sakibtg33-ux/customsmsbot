@@ -1,16 +1,18 @@
+require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
 // ================== CONFIG ==================
-const BOT_TOKEN = '8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE';
-const ADMIN_USER_ID = 1700797877;  // ← Replace with your Telegram user ID (number)
-const DEFAULT_API_KEY = 'di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz';
+const BOT_TOKEN = process.env.BOT_TOKEN || '8896805760:AAGt4CDbEdGP_Xedc9p_SpFu4d7rA3QOOSE';
+const ADMIN_USER_ID = parseInt(process.env.ADMIN_USER_ID) || 1700797877;
+const DEFAULT_API_KEY = process.env.DEFAULT_API_KEY || 'di80n58vVw6UDgQfH0bxtl3N3dR1i4yA6pfhPXEz';
 const SMS_API_URL = 'https://api.sms.net.bd/sendsms';
 const BALANCE_API_URL = 'https://api.sms.net.bd/user/balance/';
 // =============================================
 
-// ---------- Database (Vercel /tmp) ----------
-const DB_PATH = '/tmp/sms.db';
+// ---------- Database (persistent file) ----------
+const DB_PATH = path.join(__dirname, 'sms.db');
 
 function getDB() {
   return new sqlite3.Database(DB_PATH);
@@ -32,24 +34,19 @@ function initDB() {
       value TEXT
     )
   `);
-  // Insert default API key if not exists
   db.run(`
     INSERT OR IGNORE INTO config (key, value)
     VALUES ('api_key', ?)
   `, [DEFAULT_API_KEY]);
-  
-  // Insert default limit for new users (default 5)
   db.run(`
     INSERT OR IGNORE INTO config (key, value)
     VALUES ('default_limit', '5')
   `);
-  
   db.close();
+  console.log('✅ Database initialized at:', DB_PATH);
 }
 
 // ---------- Database Helpers ----------
-
-// Get the global default limit for new users
 function getDefaultLimit() {
   return new Promise((resolve, reject) => {
     const db = getDB();
@@ -61,7 +58,6 @@ function getDefaultLimit() {
   });
 }
 
-// Set the global default limit
 function setDefaultLimit(limit) {
   return new Promise((resolve, reject) => {
     const db = getDB();
@@ -88,7 +84,6 @@ function getUser(user_id) {
         db.close();
         resolve({ daily_limit, today_count });
       } else {
-        // New user: get the default limit from config
         try {
           const defaultLimit = await getDefaultLimit();
           db.run('INSERT INTO users (user_id, daily_limit, today_count, last_reset) VALUES (?, ?, 0, ?)',
@@ -122,11 +117,9 @@ function setDailyLimitForAll(limit) {
   return new Promise(async (resolve, reject) => {
     try {
       const db = getDB();
-      // Update all existing users
       db.run('UPDATE users SET daily_limit = ?', [limit], function(err) {
         if (err) { db.close(); reject(err); return; }
         const updatedCount = this.changes;
-        // Update the global default limit for new users
         db.run('UPDATE config SET value = ? WHERE key = "default_limit"', [String(limit)], (err2) => {
           db.close();
           if (err2) reject(err2);
@@ -223,12 +216,6 @@ async function checkBalance(apiKey) {
 // ---------- Bot ----------
 const bot = new Telegraf(BOT_TOKEN);
 
-// Auto set webhook (update your URL if different)
-const WEBHOOK_URL = 'https://customsmsbot-4mqx.vercel.app/api/index';
-bot.telegram.setWebhook(WEBHOOK_URL)
-  .then(() => console.log('✅ Webhook set successfully'))
-  .catch(err => console.error('❌ Webhook error:', err));
-
 // ---------- Commands ----------
 
 // /start
@@ -236,7 +223,7 @@ bot.command('start', async (ctx) => {
   const userId = ctx.from.id;
   const userData = await getUser(userId);
   const isAdmin = (userId === ADMIN_USER_ID);
-  
+
   let msg = '🤖 *Welcome to SMS Bot!*\n\n';
   msg += '📌 `/send 017XXXXXXXX message` – Send SMS\n';
   msg += '📊 `/status` – Check your remaining SMS today\n';
@@ -264,7 +251,6 @@ bot.command('send', async (ctx) => {
   const userData = await getUser(userId);
   const isAdmin = (userId === ADMIN_USER_ID);
 
-  // If not admin, check limit
   if (!isAdmin) {
     const limit = userData.daily_limit;
     const used = userData.today_count;
@@ -486,15 +472,19 @@ bot.on('text', async (ctx) => {
   await ctx.reply('🤔 Unknown command. Type `/start` for help.');
 });
 
-// ---------- Vercel handler ----------
+// ---------- Start bot with polling ----------
 initDB();
 
-module.exports = async (req, res) => {
-  try {
-    await bot.handleUpdate(req.body, res);
-    res.status(200).json({ status: 'ok' });
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
+bot.launch()
+  .then(() => {
+    console.log('🤖 Bot started successfully with polling!');
+    console.log(`📊 Admin ID: ${ADMIN_USER_ID}`);
+    console.log(`📁 Database: ${DB_PATH}`);
+  })
+  .catch(err => {
+    console.error('❌ Failed to start bot:', err);
+  });
+
+// Enable graceful stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
